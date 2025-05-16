@@ -114,3 +114,54 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 Anjali Nair
 - GitHub: [@anjalipn](https://github.com/anjalipn)
 - LinkedIn: [Anjali Nair](https://www.linkedin.com/in/anjali-nair-34a28335/)
+## Scheduling Mechanism
+
+### How It Works
+1. When a task is scheduled:
+   - A new job is created in Quartz with a unique task ID
+   - The job is configured with the invocation ID and timeout
+   - A trigger is created to execute the job after the specified timeout
+
+2. Database Tables Used:
+   - `DUE_BY_TRIGGERS`: Stores Quartz trigger information
+     - Contains job names, trigger states, and execution schedules
+     - Used by Quartz to manage job execution
+   
+   - `DUE_BY_JOB_DETAILS`: Stores job configuration
+     - Contains job class, data map (invocation ID)
+     - Persists job metadata
+   
+   - `DUE_BY_FIRED_TRIGGERS`: Tracks currently executing jobs
+     - Records when jobs start and complete
+     - Used for job state management
+   
+   - `DUE_BY_SIMPLE_TRIGGERS`: Stores one-time trigger information
+     - Contains the exact time when the job should execute
+     - Used for timeout-based scheduling
+
+3. Monitoring Process:
+   - Every 5 seconds, the system checks `INSIGHTS_STATUS_QUEUE`
+   - If a status update is found, it:
+     - Retrieves the corresponding job from Quartz
+     - Updates the job state based on the status
+     - Cleans up completed or failed jobs
+
+4. Job Lifecycle:
+   - Created: When `scheduleTask()` is called
+   - Scheduled: Stored in Quartz tables with trigger
+   - Executed: When timeout is reached
+   - Monitored: Status checked against queue
+   - Cleaned up: When status indicates completion
+
+### Table Relationships
+```
+DUE_BY_JOB_DETAILS
+    ↓ (1:1)
+DUE_BY_TRIGGERS
+    ↓ (1:1)
+DUE_BY_SIMPLE_TRIGGERS
+    ↓ (1:1)
+DUE_BY_FIRED_TRIGGERS
+    ↓ (1:1)
+INSIGHTS_STATUS_QUEUE
+```

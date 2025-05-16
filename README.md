@@ -105,11 +105,6 @@ The application automatically monitors the status queue every 5 seconds.
 4. Push to the branch
 5. Create a Pull Request
 
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Author
 
 Anjali Nair
 - GitHub: [@anjalipn](https://github.com/anjalipn)

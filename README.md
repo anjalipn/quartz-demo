@@ -10,7 +10,7 @@ This application provides a robust solution for monitoring asynchronous tasks us
 
 - Task scheduling with configurable timeouts
 - Real-time status monitoring through database queue
-- Automatic job cleanup based on status updates
+- Distributed queue processing with exactly-once semantics
 - Oracle database integration
 - Clustered Quartz configuration for high availability
 
@@ -49,6 +49,8 @@ src/main/java/com/example/quartz_demo/
 │   └── InvocationStatus.java
 ├── service/
 │   ├── AsyncTaskMonitor.java
+│   └── QueueProcessorService.java
+├── job/
 │   └── TaskProcessorJob.java
 └── QuartzDemoApplication.java
 ```
@@ -56,14 +58,97 @@ src/main/java/com/example/quartz_demo/
 ## Key Components
 
 ### AsyncTaskMonitor
-- Handles task scheduling and monitoring
+- Handles task scheduling
 - Manages job lifecycle
-- Updates task statuses
+- Updates task statuses in the queue
+
+### QueueProcessorService
+- Processes status updates from the queue
+- Uses Oracle's SELECT FOR UPDATE SKIP LOCKED for distributed locking
+- Ensures exactly-once processing across multiple instances
 
 ### TaskProcessorJob
 - Implements Quartz Job interface
 - Processes scheduled tasks
-- Monitors task status in the queue
+- Updates task status in the queue
+
+## Queue Processing
+
+The application uses a sophisticated SQL query to process status updates efficiently and safely:
+
+```sql
+WITH RecordGroups AS (
+    SELECT 
+        id, 
+        invocation_id, 
+        invocation_status, 
+        created_at,
+        ROW_NUMBER() OVER (PARTITION BY invocation_id ORDER BY created_at DESC) as is_latest,
+        LISTAGG(id, ',') WITHIN GROUP (ORDER BY created_at) OVER (PARTITION BY invocation_id) as group_ids
+    FROM INSIGHTS_STATUS_QUEUE
+    FOR UPDATE SKIP LOCKED
+)
+SELECT * FROM RecordGroups
+WHERE ROWNUM <= 10
+ORDER BY invocation_id, created_at
+```
+
+### Query Explanation
+
+1. **Common Table Expression (CTE)**
+   - Creates a temporary result set named `RecordGroups`
+   - Includes all necessary fields: `id`, `invocation_id`, `invocation_status`, `created_at`
+
+2. **Window Functions**
+   - `ROW_NUMBER()`: Assigns row numbers within each `invocation_id` group
+     - Orders by `created_at` DESC (newest first)
+     - `is_latest = 1` indicates the newest record in its group
+   - `LISTAGG()`: Concatenates all record IDs in each group
+     - Groups by `invocation_id`
+     - Orders by `created_at`
+     - Example: "1,2,4" for a group with IDs 1, 2, and 4
+
+3. **Locking Mechanism**
+   - `FOR UPDATE SKIP LOCKED`: Ensures thread safety
+   - Locks selected rows for update
+   - Skips already locked rows
+   - Enables safe concurrent processing in clustered environments
+
+4. **Result Limiting**
+   - `WHERE ROWNUM <= 10`: Processes maximum 10 records per run
+   - Applied after CTE but before final ordering
+
+5. **Final Ordering**
+   - `ORDER BY invocation_id, created_at`
+   - Groups by `invocation_id`
+   - Orders by `created_at` within each group
+
+### Example
+
+Given these records:
+```
+id | invocation_id | status    | created_at
+1  | task1        | STARTED   | 10:00
+2  | task1        | PROGRESS  | 10:01
+3  | task2        | STARTED   | 10:02
+4  | task1        | COMPLETE  | 10:03
+```
+
+The query returns:
+```
+id | invocation_id | status    | created_at | is_latest | group_ids
+4  | task1        | COMPLETE  | 10:03     | 1         | 1,2,4
+2  | task1        | PROGRESS  | 10:01     | 2         | 1,2,4
+1  | task1        | STARTED   | 10:00     | 3         | 1,2,4
+3  | task2        | STARTED   | 10:02     | 1         | 3
+```
+
+This structure enables:
+- Identification of latest status per invocation (`is_latest = 1`)
+- Batch deletion of related records (`group_ids`)
+- Chronological processing
+- Controlled batch size
+- Thread-safe concurrent processing
 
 ## Usage
 
@@ -81,8 +166,10 @@ task.setTimeout(300); // 5 minutes
 asyncTaskMonitor.scheduleTask(task);
 ```
 
-3. Monitor task status:
-The application automatically monitors the status queue every 5 seconds.
+3. Queue Processing:
+- The application automatically processes status updates from the queue every 5 seconds
+- Multiple instances can run concurrently, with each record processed exactly once
+- Failed records remain in the queue for retry
 
 ## Database Schema
 
@@ -91,7 +178,6 @@ The application automatically monitors the status queue every 5 seconds.
 - invocation_id: String
 - invocation_status: String
 - created_at: Timestamp
-- processed: Char(1)
 
 ### DUE_BY_TRIGGERS
 - JOB_NAME: String
@@ -105,10 +191,12 @@ The application automatically monitors the status queue every 5 seconds.
 4. Push to the branch
 5. Create a Pull Request
 
+## Author
 
 Anjali Nair
 - GitHub: [@anjalipn](https://github.com/anjalipn)
 - LinkedIn: [Anjali Nair](https://www.linkedin.com/in/anjali-nair-34a28335/)
+
 ## Scheduling Mechanism
 
 ### How It Works
